@@ -1,0 +1,260 @@
+// ==UserScript==
+// @name         CommBank Balance Spoof v13 - GUI
+// @namespace    http://tampermonkey.net/
+// @version      13.0
+// @description  Press P to open GUI. Total credits + net position = sum of both accounts.
+// @author       zoinborggithub
+// @match        https://www1.my.commbank.com.au/*
+// @match        https://www2.my.commbank.com.au/*
+// @match        https://www3.my.commbank.com.au/*
+// @match        https://www4.my.commbank.com.au/*
+// @match        https://www5.my.commbank.com.au/*
+// @match        https://*.my.commbank.com.au/*
+// @match        https://*.commbank.com.au/*
+// @grant        none
+// @run-at       document-end
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const STORAGE_KEY = 'cba_spoof_v13';
+
+    const DEFAULTS = {
+        sa_balance:   '$91,442.56',
+        sa_available: '$83,896.01',
+        bs_balance:   '$0.00',
+        bs_available: '$0.00',
+    };
+
+    function load() {
+        try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(STORAGE_KEY))); }
+        catch { return Object.assign({}, DEFAULTS); }
+    }
+
+    function save(vals) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(vals));
+    }
+
+    // Parse a dollar string like "$91,442.56" -> 91442.56
+    function parseDollar(str) {
+        const n = parseFloat((str || '0').replace(/[^0-9.-]/g, ''));
+        return isNaN(n) ? 0 : n;
+    }
+
+    // Format a number back to "$91,442.56"
+    function formatDollar(n) {
+        return '$' + n.toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    // Sum two dollar strings
+    function sumDollars(a, b) {
+        return formatDollar(parseDollar(a) + parseDollar(b));
+    }
+
+    // Find an account-row by h3.account-name text
+    function findAccountRow(nameFragment) {
+        for (const h3 of document.querySelectorAll('h3.account-name')) {
+            if (h3.textContent.trim().includes(nameFragment)) {
+                return h3.closest('.account-row') || h3.closest('.account-item') || h3.closest('.account-card');
+            }
+        }
+        return null;
+    }
+
+    function setBalances(row, balance, available) {
+        if (!row) return;
+        row.querySelectorAll('li.balance.balance__item').forEach(li => {
+            const label = li.querySelector('span:first-child');
+            const value = li.querySelector('span.monetary-value');
+            if (!label || !value) return;
+            const text = label.textContent.trim();
+            if (text === 'Balance') {
+                value.textContent = balance;
+                value.setAttribute('title', balance);
+            } else if (text === 'Available') {
+                value.textContent = available;
+                value.setAttribute('title', available);
+            }
+        });
+    }
+
+    function applyOverrides(vals) {
+        // Smart Access
+        setBalances(findAccountRow('Smart Access'), vals.sa_balance, vals.sa_available);
+
+        // Business Savings
+        setBalances(findAccountRow('Business Savings'), vals.bs_balance, vals.bs_available);
+
+        // Total credits = SA balance + BS balance
+        const total = sumDollars(vals.sa_balance, vals.bs_balance);
+
+        const credits = document.querySelector('li.subtotal__credits span.monetary-value');
+        if (credits) {
+            credits.textContent = total;
+            credits.setAttribute('title', total);
+        }
+
+        // Net position = same total (debits stay $0)
+        document.querySelectorAll('li.subtotal').forEach(li => {
+            if (li.classList.contains('subtotal__credits') || li.classList.contains('subtotal__debits')) return;
+            const v = li.querySelector('span.monetary-value');
+            if (!v) return;
+            v.textContent = total;
+            v.setAttribute('title', total);
+        });
+    }
+
+    // --- GUI ---
+    function buildGUI() {
+        if (document.getElementById('cba-gui')) return;
+
+        const vals = load();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'cba-gui';
+        overlay.style.cssText = `
+            position: fixed; inset: 0; z-index: 2147483647;
+            background: rgba(0,0,0,0.55); display: flex;
+            align-items: center; justify-content: center;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        `;
+
+        const card = document.createElement('div');
+        card.style.cssText = `
+            background: #ffffff; border-radius: 16px;
+            padding: 32px 28px; width: 360px;
+            box-shadow: 0 24px 60px rgba(0,0,0,0.3);
+        `;
+
+        card.innerHTML = `
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:24px;">
+                <div>
+                    <div style="font-size:18px; font-weight:600; color:#111;">Balance Editor</div>
+                    <div style="font-size:12px; color:#888; margin-top:2px;">Press P to open · Esc to close</div>
+                </div>
+                <button id="cba-close" style="background:none; border:none; cursor:pointer; font-size:20px; color:#aaa; padding:0; line-height:1;">✕</button>
+            </div>
+
+            <div style="font-size:11px; font-weight:600; color:#888; text-transform:uppercase; letter-spacing:0.07em; margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid #f0f0f0;">Smart Access</div>
+
+            <div style="margin-bottom:14px;">
+                <label style="font-size:12px; font-weight:500; color:#555; display:block; margin-bottom:5px;">Balance</label>
+                <input id="cba-sa-balance" type="text" value="${vals.sa_balance}" style="${inputStyle()}"/>
+            </div>
+            <div style="margin-bottom:22px;">
+                <label style="font-size:12px; font-weight:500; color:#555; display:block; margin-bottom:5px;">Available</label>
+                <input id="cba-sa-available" type="text" value="${vals.sa_available}" style="${inputStyle()}"/>
+            </div>
+
+            <div style="font-size:11px; font-weight:600; color:#888; text-transform:uppercase; letter-spacing:0.07em; margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid #f0f0f0;">Business Savings</div>
+
+            <div style="margin-bottom:14px;">
+                <label style="font-size:12px; font-weight:500; color:#555; display:block; margin-bottom:5px;">Balance</label>
+                <input id="cba-bs-balance" type="text" value="${vals.bs_balance}" style="${inputStyle()}"/>
+            </div>
+            <div style="margin-bottom:16px;">
+                <label style="font-size:12px; font-weight:500; color:#555; display:block; margin-bottom:5px;">Available</label>
+                <input id="cba-bs-available" type="text" value="${vals.bs_available}" style="${inputStyle()}"/>
+            </div>
+
+            <div id="cba-preview" style="background:#f7f7f7; border-radius:8px; padding:10px 14px; margin-bottom:20px; font-size:13px; color:#555;">
+                Total credits &amp; net position: <strong id="cba-total" style="color:#111;">${sumDollars(vals.sa_balance, vals.bs_balance)}</strong>
+            </div>
+
+            <div style="display:flex; gap:10px;">
+                <button id="cba-reset" style="${btnStyle('#fff', '#111', '#e0e0e0')}">Reset</button>
+                <button id="cba-apply" style="${btnStyle('#111', '#fff', '#111')}">Apply</button>
+            </div>
+
+            <div id="cba-status" style="text-align:center; font-size:13px; color:#22aa66; margin-top:14px; min-height:18px;"></div>
+        `;
+
+        overlay.appendChild(card);
+        document.body.appendChild(overlay);
+
+        // Live preview of total as user types
+        function updatePreview() {
+            const saB = document.getElementById('cba-sa-balance').value;
+            const bsB = document.getElementById('cba-bs-balance').value;
+            document.getElementById('cba-total').textContent = sumDollars(saB, bsB);
+        }
+
+        ['cba-sa-balance', 'cba-bs-balance'].forEach(id => {
+            document.getElementById(id).addEventListener('input', updatePreview);
+        });
+
+        // Focus styles
+        card.querySelectorAll('input').forEach(inp => {
+            inp.addEventListener('focus', () => inp.style.borderColor = '#111');
+            inp.addEventListener('blur',  () => inp.style.borderColor = '#e0e0e0');
+        });
+
+        function closeGUI() { overlay.remove(); }
+        document.getElementById('cba-close').addEventListener('click', closeGUI);
+        overlay.addEventListener('click', e => { if (e.target === overlay) closeGUI(); });
+        document.addEventListener('keydown', function esc(e) {
+            if (e.key === 'Escape') { closeGUI(); document.removeEventListener('keydown', esc); }
+        });
+
+        document.getElementById('cba-apply').addEventListener('click', () => {
+            const newVals = {
+                sa_balance:   document.getElementById('cba-sa-balance').value.trim(),
+                sa_available: document.getElementById('cba-sa-available').value.trim(),
+                bs_balance:   document.getElementById('cba-bs-balance').value.trim(),
+                bs_available: document.getElementById('cba-bs-available').value.trim(),
+            };
+            save(newVals);
+            applyOverrides(newVals);
+            const status = document.getElementById('cba-status');
+            status.textContent = '✓ Applied and saved!';
+            setTimeout(() => { status.textContent = ''; }, 2500);
+        });
+
+        document.getElementById('cba-reset').addEventListener('click', () => {
+            document.getElementById('cba-sa-balance').value   = DEFAULTS.sa_balance;
+            document.getElementById('cba-sa-available').value = DEFAULTS.sa_available;
+            document.getElementById('cba-bs-balance').value   = DEFAULTS.bs_balance;
+            document.getElementById('cba-bs-available').value = DEFAULTS.bs_available;
+            updatePreview();
+        });
+    }
+
+    function inputStyle() {
+        return `width:100%; box-sizing:border-box; padding:10px 12px;
+            border:1.5px solid #e0e0e0; border-radius:8px;
+            font-size:15px; color:#111; outline:none;
+            transition: border-color 0.15s;`;
+    }
+
+    function btnStyle(bg, color, border) {
+        return `flex:1; padding:11px; border-radius:8px;
+            border:1.5px solid ${border}; background:${bg};
+            font-size:14px; font-weight:600; color:${color};
+            cursor:pointer;`;
+    }
+
+    // Press P to open
+    document.addEventListener('keydown', e => {
+        if (e.key !== 'p' && e.key !== 'P') return;
+        const tag = document.activeElement?.tagName?.toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || document.activeElement?.isContentEditable) return;
+        buildGUI();
+    });
+
+    // Auto-apply on load
+    function waitAndApply() {
+        const vals = load();
+        let attempts = 0;
+        const interval = setInterval(() => {
+            if (document.querySelectorAll('h3.account-name').length > 0) {
+                applyOverrides(vals);
+                clearInterval(interval);
+            }
+            if (++attempts > 20) clearInterval(interval);
+        }, 500);
+    }
+
+    waitAndApply();
+
+})();
